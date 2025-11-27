@@ -19,16 +19,19 @@ declare_id!("CAYsmbRRvTsiSgDwWSgQPZcJdp6khx9xLoQguT9aWCcC");
 
 #[program]
 pub mod nft_marketplace_token2022 {
-    use anchor_lang::prelude::{program::invoke, program_pack::Pack};
+    use anchor_lang::prelude::{clock::Epoch, program::invoke, program_pack::Pack};
     use anchor_spl::{
         associated_token::spl_associated_token_account::solana_program::lamports,
-        token_2022::{spl_token_2022, transfer_checked, TransferChecked},
+        token_2022::{
+            close_account, spl_token_2022, transfer_checked, CloseAccount, TransferChecked,
+        },
     };
 
     use super::*;
 
     pub fn create_auction(
         ctx: Context<CreateAuction>,
+        auction_id: u64,
         starting_bid: u64,
         duration_seconds: i64,
         cooldown_seconds: i64,
@@ -37,6 +40,7 @@ pub mod nft_marketplace_token2022 {
 
         // initialize auction state
         let auction = &mut ctx.accounts.auction;
+        auction.auction_id = auction_id;
         auction.seller = ctx.accounts.seller.key();
         auction.mint = ctx.accounts.nft_mint.key();
         auction.highest_bid = starting_bid;
@@ -121,7 +125,6 @@ pub mod nft_marketplace_token2022 {
                 a.cooldown,
             )
         };
-
         let now = Clock::get()?.unix_timestamp;
 
         require!(is_active, AuctionError::AuctionInactive);
@@ -145,35 +148,65 @@ pub mod nft_marketplace_token2022 {
         )?;
 
         // Refund previous bidder from auction PDA (if applicable)
+        // 2) Refund previous bidder if needed AND client provided previous_bidder
         if prev_bidder_pubkey != Pubkey::default() && prev_bid > 0 {
-            // seeds for auction PDA signer
-            let auction_bump = ctx.accounts.auction.bump;
-            let seeds = &[
-                b"auction",
-                ctx.accounts.auction.seller.as_ref(),
-                ctx.accounts.auction.mint.as_ref(),
-                &[auction_bump],
-            ];
-            let signer_seeds = &[&seeds[..]];
+            // previous_bidder must be provided by client
+            let prev_acct = ctx
+                .accounts
+                .previous_bidder
+                .as_ref()
+                .expect("previous bidder account required for refund");
 
-            let refund_ix = system_instruction::transfer(
-                &ctx.accounts.auction.key(),
-                &prev_bidder_pubkey,
-                prev_bid,
+            // ensure the account passed matches the recorded previous bidder
+            require!(
+                prev_acct.key() == prev_bidder_pubkey,
+                AuctionError::InvalidPreviousBidder
             );
 
-            invoke_signed(
-                &refund_ix,
-                &[
-                    ctx.accounts.auction.to_account_info(),
-                    ctx.accounts.system_program.to_account_info(),
-                ],
-                signer_seeds,
-            )?;
+            **ctx
+                .accounts
+                .auction
+                .to_account_info()
+                .try_borrow_mut_lamports()? -= prev_bid;
+
+            // Credit to previous bidder
+            **prev_acct
+                .to_account_info()
+                .try_borrow_mut_lamports()? += prev_bid;
+
+            // // Build signer seeds for auction PDA
+            // let auction = &ctx.accounts.auction;
+            // let auction_id_bytes = auction.auction_id.to_le_bytes();
+            // let seeds: &[&[u8]] = &[
+            //     b"auction",
+            //     auction.seller.as_ref(),
+            //     auction.mint.as_ref(),
+            //     auction_id_bytes.as_ref(),
+            //     &[auction.bump],
+            // ];
+            // let signer_seeds = &[seeds];
+
+            // // Refund: auction PDA -> previous bidder (PDA signs)
+            // let refund_ix = system_instruction::transfer(
+            //     &ctx.accounts.auction.key(),
+            //     &prev_acct.key(),
+            //     prev_bid,
+            // );
+
+            // // IMPORTANT: include auction AND previous bidder as accounts (previous bidder must be writable)
+            // invoke_signed(
+            //     &refund_ix,
+            //     &[
+            //         ctx.accounts.auction.to_account_info(),
+            //         prev_acct.to_account_info(),               // << include prev bidder here!
+            //         ctx.accounts.system_program.to_account_info(),
+            //     ],
+            //     signer_seeds,
+            // )?;
         }
 
         // Update auction state (now safe to mutably borrow)
-        {
+        
             let auction: &mut Account<'_, Auction> = &mut ctx.accounts.auction;
             auction.highest_bid = amount;
             auction.highest_bidder = ctx.accounts.bidder.key();
@@ -182,7 +215,7 @@ pub mod nft_marketplace_token2022 {
             if auction.end_time < now + auction.cooldown {
                 auction.end_time = now + auction.cooldown;
             }
-        }
+        
 
         Ok(())
     }
@@ -203,17 +236,19 @@ pub mod nft_marketplace_token2022 {
         let auction = &mut ctx.accounts.auction;
         auction.is_active = false;
 
+        let auction_bump = auction.bump;
+        let auction_id = auction.auction_id.to_le_bytes();
+        let seeds = &[
+            b"auction",
+            auction.seller.as_ref(),
+            auction.mint.as_ref(),
+            auction_id.as_ref(),
+            &[auction_bump],
+        ];
+        let signer_seeds = &[&seeds[..]];
+
         // If there is no winner, return NFT to seller
         if auction.highest_bidder == Pubkey::default() || auction.highest_bid == 0 {
-            let auction_bump = auction.bump;
-            let seeds = &[
-                b"auction",
-                auction.seller.as_ref(),
-                auction.mint.as_ref(),
-                &[auction_bump],
-            ];
-            let signer_seeds = &[&seeds[..]];
-
             // transfer back to seller_token_account (PDA signs)
             transfer_checked(
                 CpiContext::new_with_signer(
@@ -239,15 +274,6 @@ pub mod nft_marketplace_token2022 {
             AuctionError::InvalidWinnerAccount
         );
 
-        let auction_bump = auction.bump;
-        let seeds = &[
-            b"auction",
-            auction.seller.as_ref(),
-            auction.mint.as_ref(),
-            &[auction_bump],
-        ];
-        let signer_seeds = &[&seeds[..]];
-
         // transfer NFT from vault -> winner_ata (PDA signs)
         transfer_checked(
             CpiContext::new_with_signer(
@@ -266,12 +292,29 @@ pub mod nft_marketplace_token2022 {
 
         // Pay seller from auction PDA lamports
         let final_price = auction.highest_bid;
+        **auction.to_account_info().try_borrow_mut_lamports()? -= final_price;
+        **ctx.accounts.seller.try_borrow_mut_lamports()? += final_price;
+
+        // CLOSE VAULT TOKEN ACCOUNT
+        close_account(CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            CloseAccount {
+                account: ctx.accounts.nft_vault.to_account_info(),
+                destination: ctx.accounts.seller.to_account_info(),
+                authority: auction.to_account_info(),
+            },
+            signer_seeds,
+        ))?;
+
+        // CLOSE VAULT TOKEN ACCOUNT
+        // CLOSE AUCTION PDA
+        let lamports = ctx.accounts.auction.to_account_info().lamports();
         **ctx
             .accounts
             .auction
             .to_account_info()
-            .try_borrow_mut_lamports()? -= final_price;
-        **ctx.accounts.seller.try_borrow_mut_lamports()? += final_price;
+            .try_borrow_mut_lamports()? -= lamports;
+        **ctx.accounts.seller.try_borrow_mut_lamports()? += lamports;
 
         Ok(())
     }
@@ -280,7 +323,7 @@ pub mod nft_marketplace_token2022 {
 /// ----------------- Accounts / Contexts -----------------
 
 #[derive(Accounts)]
-#[instruction(seed:u64)]
+#[instruction(auction_id: u64)]
 pub struct CreateAuction<'info> {
     #[account(
         init,
@@ -289,6 +332,7 @@ pub struct CreateAuction<'info> {
             b"auction",
             seller.key().as_ref(),
             nft_mint.key().as_ref(),
+            &auction_id.to_le_bytes()
         ],
         bump,
         space = 8 + Auction::MAX_SIZE,
@@ -328,7 +372,7 @@ pub struct CreateAuction<'info> {
 pub struct PlaceBid<'info> {
     #[account(
         mut,
-        seeds = [b"auction", auction.seller.as_ref(), auction.mint.as_ref()],
+        seeds = [b"auction", auction.seller.as_ref(), auction.mint.as_ref(), auction.auction_id.to_le_bytes().as_ref()],
         bump
     )]
     pub auction: Account<'info, Auction>,
@@ -337,8 +381,9 @@ pub struct PlaceBid<'info> {
     pub bidder: Signer<'info>,
 
     /// CHECK: refunded manually; client must pass previous bidder account when present.
-    // #[account(mut)]
-    // pub previous_bidder: UncheckedAccount<'info>,
+    #[account(mut)]
+    pub previous_bidder: Option<UncheckedAccount<'info>>,
+
     pub system_program: Program<'info, System>,
 }
 
@@ -346,8 +391,9 @@ pub struct PlaceBid<'info> {
 pub struct FinalizeAuction<'info> {
     #[account(
         mut,
-        seeds = [b"auction", auction.seller.as_ref(), auction.mint.as_ref()],
-        bump
+        seeds = [b"auction", auction.seller.as_ref(), auction.mint.as_ref(), auction.auction_id.to_le_bytes().as_ref()],
+        bump = auction.bump,
+        close = seller
     )]
     pub auction: Account<'info, Auction>,
 
@@ -391,6 +437,7 @@ pub struct FinalizeAuction<'info> {
 
 #[account]
 pub struct Auction {
+    pub auction_id: u64,
     pub seller: Pubkey,
     pub mint: Pubkey,
     pub highest_bidder: Pubkey,
@@ -404,7 +451,7 @@ pub struct Auction {
 
 impl Auction {
     // Conservative packing size (bytes). Adjust if you add fields.
-    pub const MAX_SIZE: usize = 32 + 32 + 32 + 8 + 8 + 8 + 8 + 1 + 1 + 16;
+    pub const MAX_SIZE: usize = 32 + 32 + 32 + 8 + 8 + 8 + 8 + 1 + 1 + 8;
 
     // Define LEN as an alias for MAX_SIZE
     pub const LEN: usize = Self::MAX_SIZE;
