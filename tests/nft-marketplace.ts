@@ -298,7 +298,7 @@ describe("nft marketplace — token2022", () => {
     )[0];
 
     // Derive the vault associated token account for the escrow
-    const [vault, vaultBump] = PublicKey.findProgramAddressSync(
+    const [vault, _] = PublicKey.findProgramAddressSync(
       [
         Buffer.from("vault"),
         auction.toBuffer(), // auction PDA
@@ -306,27 +306,6 @@ describe("nft marketplace — token2022", () => {
       program.programId
     );
     const tx = new Transaction();
-    const mintRent = await getMinimumBalanceForRentExemptMint(connection);
-
-    // tx.add(
-    //   SystemProgram.createAccount({
-    //     fromPubkey: provider.publicKey,
-    //     newAccountPubkey: mint.publicKey,
-    //     lamports: mintRent,
-    //     space: MINT_SIZE,
-    //     programId: TOKEN_2022_PROGRAM_ID,
-    //   })
-    // );
-
-    // tx.add(
-    //   createInitializeMint2Instruction(
-    //     mint.publicKey,
-    //     0,                  // NFT: no decimals
-    //     seller.publicKey,   // seller is mint authority
-    //     null,
-    //     TOKEN_2022_PROGRAM_ID
-    //   )
-    // );
 
     tx.add(
       createAssociatedTokenAccountIdempotentInstruction(
@@ -378,16 +357,6 @@ describe("nft marketplace — token2022", () => {
     console.log("Winner:", winner.toBase58());
     let sellerSol = await provider.connection.getBalance(seller.publicKey);
     console.log("Seller SOL balance:", sellerSol.toString());
-
-    // // Airdrop SOL to bidder1 and bidder2
-    // await provider.connection.confirmTransaction(
-    //   await provider.connection.requestAirdrop(bidder1.publicKey, 5e9),
-    //   "confirmed"
-    // );
-    // await provider.connection.confirmTransaction(
-    //   await provider.connection.requestAirdrop(bidder2.publicKey, 5e9),
-    //   "confirmed"
-    // );
 
     await program.methods
       .placeBid(new BN(1_500_000))

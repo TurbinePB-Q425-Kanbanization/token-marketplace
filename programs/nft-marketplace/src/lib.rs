@@ -1,8 +1,5 @@
 #![allow(unexpected_cfgs, deprecated)]
 use anchor_lang::{prelude::*, solana_program};
-
-// Token-2022 program ID
-const TOKEN_2022_PROGRAM_ID: Pubkey = anchor_spl::token_2022::ID;
 use anchor_lang::prelude::{Interface, InterfaceAccount};
 use anchor_lang::solana_program::system_instruction;
 use anchor_spl::{
@@ -19,9 +16,8 @@ declare_id!("CAYsmbRRvTsiSgDwWSgQPZcJdp6khx9xLoQguT9aWCcC");
 
 #[program]
 pub mod nft_marketplace_token2022 {
-    use anchor_lang::prelude::{clock::Epoch, program::invoke, program_pack::Pack};
+    use anchor_lang::prelude::{program::invoke, program_pack::Pack};
     use anchor_spl::{
-        associated_token::spl_associated_token_account::solana_program::lamports,
         token_2022::{
             close_account, spl_token_2022, transfer_checked, CloseAccount, TransferChecked,
         },
@@ -115,14 +111,13 @@ pub mod nft_marketplace_token2022 {
 
     pub fn place_bid(ctx: Context<PlaceBid>, amount: u64) -> Result<()> {
         // read auction snapshot
-        let (prev_bid, prev_bidder_pubkey, is_active, end_time, cooldown) = {
+        let (prev_bid, prev_bidder_pubkey, is_active, end_time) = {
             let a = &ctx.accounts.auction;
             (
                 a.highest_bid,
                 a.highest_bidder,
                 a.is_active,
                 a.end_time,
-                a.cooldown,
             )
         };
         let now = Clock::get()?.unix_timestamp;
@@ -174,35 +169,6 @@ pub mod nft_marketplace_token2022 {
                 .to_account_info()
                 .try_borrow_mut_lamports()? += prev_bid;
 
-            // // Build signer seeds for auction PDA
-            // let auction = &ctx.accounts.auction;
-            // let auction_id_bytes = auction.auction_id.to_le_bytes();
-            // let seeds: &[&[u8]] = &[
-            //     b"auction",
-            //     auction.seller.as_ref(),
-            //     auction.mint.as_ref(),
-            //     auction_id_bytes.as_ref(),
-            //     &[auction.bump],
-            // ];
-            // let signer_seeds = &[seeds];
-
-            // // Refund: auction PDA -> previous bidder (PDA signs)
-            // let refund_ix = system_instruction::transfer(
-            //     &ctx.accounts.auction.key(),
-            //     &prev_acct.key(),
-            //     prev_bid,
-            // );
-
-            // // IMPORTANT: include auction AND previous bidder as accounts (previous bidder must be writable)
-            // invoke_signed(
-            //     &refund_ix,
-            //     &[
-            //         ctx.accounts.auction.to_account_info(),
-            //         prev_acct.to_account_info(),               // << include prev bidder here!
-            //         ctx.accounts.system_program.to_account_info(),
-            //     ],
-            //     signer_seeds,
-            // )?;
         }
 
         // Update auction state (now safe to mutably borrow)
