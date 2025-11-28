@@ -157,7 +157,7 @@ This NFT marketplace is a Solana program that facilitates auction-based trading 
                  │  Refund previous bidder
                  ▼
    ┌─────────────────────────────┐
-   │  Previous Bidder (if any)  │
+   │  Previous Bidder (if any)   │
    │  Receives refund            │
    └─────────────────────────────┘
 
@@ -185,7 +185,7 @@ This NFT marketplace is a Solana program that facilitates auction-based trading 
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Instruction Flow                          │
+│                    Instruction Flow                         │
 └─────────────────────────────────────────────────────────────┘
 
 create_auction()
@@ -225,8 +225,8 @@ finalize_auction()
 
 ```
 Auction Account Structure:
-┌─────────────────────────────────────────┐
-│ Field           │ Type      │ Size (bytes)│
+┌──────────────────────────────────────────┐
+│ Field           │ Type      │ Size(bytes)│
 ├─────────────────┼───────────┼────────────┤
 │ seller          │ Pubkey    │ 32         │
 │ mint            │ Pubkey    │ 32         │
